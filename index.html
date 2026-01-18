@@ -1,258 +1,199 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <title>World Wide Whiteboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta charset="UTF-8">
+<title>Realtime Whiteboard</title>
 
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<style>
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #111;
+}
 
-  <style>
-    html, body {
-      margin: 0;
-      height: 100%;
-      overflow: hidden;
-      font-family: system-ui, sans-serif;
-      background: #eee;
-    }
+canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
 
-    #toolbar {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      background: #1a1a1a;
-      color: white;
-      display: flex;
-      gap: 8px;
-      padding: 6px;
-      align-items: center;
-      z-index: 10;
-    }
+#toolbar {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  background: #222;
+  padding: 8px;
+  border-radius: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
 
-    #toolbar * {
-      background: #2a2a2a;
-      color: white;
-      border: none;
-      padding: 4px 6px;
-      border-radius: 4px;
-    }
+button, input {
+  cursor: pointer;
+}
 
-    #viewport {
-      position: absolute;
-      top: 42px;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      overflow: hidden;
-      cursor: grab;
-    }
-
-    canvas {
-      background: white;
-    }
-
-    .cursor {
-      position: absolute;
-      pointer-events: none;
-      font-size: 14px;
-      transform: translate(-50%, -50%);
-      color: red;
-    }
-
-    .text-input {
-      position: absolute;
-      background: transparent;
-      border: 1px dashed #999;
-      outline: none;
-      font: 20px Arial;
-    }
-  </style>
+.cursor {
+  position: absolute;
+  pointer-events: none;
+  font-size: 12px;
+  transform: translate(10px, 10px);
+}
+</style>
 </head>
+
 <body>
 
 <div id="toolbar">
-  <select id="tool">
-    <option value="pen">Pen</option>
-    <option value="line">Line</option>
-    <option value="rect">Rect</option>
-    <option value="circle">Circle</option>
-    <option value="text">Text</option>
-    <option value="eraser">Eraser</option>
-  </select>
-  <input type="color" id="color" value="#000000" />
-  <input type="range" id="size" min="1" max="20" value="3" />
-  <button id="voteReset">Vote reset (0/5)</button>
+  <button onclick="tool='pen'">✏️</button>
+  <button onclick="tool='rect'">⬛</button>
+  <button onclick="tool='line'">➖</button>
+  <input type="color" id="color">
+  <input type="range" id="size" min="1" max="20" value="4">
 </div>
 
-<div id="viewport">
-  <canvas id="board" width="3000" height="3000"></canvas>
-</div>
+<canvas id="canvas"></canvas>
+<canvas id="preview"></canvas>
 
 <script>
-  // FIREBASE CONFIG
-  const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT.firebaseapp.com",
-    databaseURL: "https://YOUR_PROJECT.firebaseio.com",
-    projectId: "YOUR_PROJECT"
-  };
-  firebase.initializeApp(firebaseConfig);
-  const db = firebase.database();
-  const strokesRef = db.ref("strokes");
-  const cursorsRef = db.ref("cursors");
-  const votesRef = db.ref("resetVotes");
+const canvas = document.getElementById("canvas");
+const preview = document.getElementById("preview");
+const ctx = canvas.getContext("2d");
+const pctx = preview.getContext("2d");
 
-  const userId = Math.random().toString(36).slice(2);
+canvas.width = preview.width = innerWidth;
+canvas.height = preview.height = innerHeight;
 
-  const canvas = document.getElementById("board");
-  const ctx = canvas.getContext("2d");
-  const viewport = document.getElementById("viewport");
+const nickname = prompt("Nickname?");
+const room = location.hash.slice(1) || "main";
+const colorInput = document.getElementById("color");
+const sizeInput = document.getElementById("size");
 
-  let scale = 1, offsetX = 0, offsetY = 0;
-  let panning = false, panStart = {};
-  let drawing = false, startX = 0, startY = 0;
+let tool = "pen";
+let drawing = false;
+let start = null;
 
-  function redrawAll() {
-    ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
-    ctx.clearRect(-offsetX / scale, -offsetY / scale, canvas.width / scale, canvas.height / scale);
-    strokesRef.once("value", snap => snap.forEach(s => draw(s.val())));
+const userColor = "#" + Math.floor(Math.random()*16777215).toString(16);
+
+const ws = new WebSocket(`ws://${location.host}`);
+const cursors = {};
+
+ws.onmessage = e => {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === "draw") draw(msg);
+  if (msg.type === "cursor") updateCursor(msg);
+};
+
+function draw(d) {
+  ctx.strokeStyle = d.color;
+  ctx.lineWidth = d.size;
+  ctx.beginPath();
+
+  if (d.tool === "pen") {
+    ctx.moveTo(d.from.x, d.from.y);
+    ctx.lineTo(d.to.x, d.to.y);
   }
 
-  // ZOOM
-  viewport.addEventListener("wheel", e => {
-    e.preventDefault();
-    const zoom = e.deltaY < 0 ? 1.1 : 0.9;
-    scale *= zoom;
-    redrawAll();
-  });
-
-  // PAN
-  viewport.addEventListener("mousedown", e => {
-    if (e.button !== 1) return;
-    panning = true;
-    panStart = { x: e.clientX - offsetX, y: e.clientY - offsetY };
-  });
-  window.addEventListener("mousemove", e => {
-    if (!panning) return;
-    offsetX = e.clientX - panStart.x;
-    offsetY = e.clientY - panStart.y;
-    redrawAll();
-  });
-  window.addEventListener("mouseup", () => panning = false);
-
-  function draw(d) {
-    ctx.strokeStyle = d.color;
-    ctx.fillStyle = d.color;
-    ctx.lineWidth = d.size;
-    ctx.lineCap = "round";
-
-    if (d.tool === "pen") {
-      ctx.beginPath();
-      ctx.moveTo(d.x1, d.y1);
-      ctx.lineTo(d.x2, d.y2);
-      ctx.stroke();
-    }
-    if (d.tool === "line") {
-      ctx.beginPath();
-      ctx.moveTo(d.x1, d.y1);
-      ctx.lineTo(d.x2, d.y2);
-      ctx.stroke();
-    }
-    if (d.tool === "rect") ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
-    if (d.tool === "circle") {
-      const r = Math.hypot(d.x2 - d.x1, d.y2 - d.y1);
-      ctx.beginPath();
-      ctx.arc(d.x1, d.y1, r, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    if (d.tool === "eraser") ctx.clearRect(d.x2 - d.size, d.y2 - d.size, d.size * 2, d.size * 2);
-    if (d.tool === "text") {
-      ctx.font = `${d.size * 6}px Arial`;
-      ctx.fillText(d.text, d.x1, d.y1);
-    }
+  if (d.tool === "line") {
+    ctx.moveTo(d.from.x, d.from.y);
+    ctx.lineTo(d.to.x, d.to.y);
   }
 
-  // DRAW EVENTS
-  canvas.addEventListener("mousedown", e => {
-    drawing = true;
-    startX = (e.offsetX - offsetX) / scale;
-    startY = (e.offsetY - offsetY) / scale;
+  if (d.tool === "rect") {
+    ctx.strokeRect(
+      d.from.x,
+      d.from.y,
+      d.to.x - d.from.x,
+      d.to.y - d.from.y
+    );
+  }
 
-    if (tool.value === "text") {
-      const input = document.createElement("div");
-      input.contentEditable = true;
-      input.className = "text-input";
-      input.style.left = e.pageX + "px";
-      input.style.top = e.pageY + "px";
-      input.style.color = color.value;
-      document.body.appendChild(input);
-      input.focus();
-      input.onblur = () => {
-        const text = input.innerText.trim();
-        document.body.removeChild(input);
-        if (!text) return;
-        strokesRef.push({ userId, tool: "text", text, x1: startX, y1: startY, color: color.value, size: size.value });
-      };
+  ctx.stroke();
+}
+
+function updateCursor(d) {
+  if (!cursors[d.user]) {
+    const el = document.createElement("div");
+    el.className = "cursor";
+    el.style.color = d.color;
+    el.innerText = d.user;
+    document.body.appendChild(el);
+    cursors[d.user] = el;
+  }
+  cursors[d.user].style.left = d.x + "px";
+  cursors[d.user].style.top = d.y + "px";
+}
+
+canvas.onmousedown = e => {
+  drawing = true;
+  start = { x: e.clientX, y: e.clientY };
+};
+
+canvas.onmousemove = e => {
+  ws.send(JSON.stringify({
+    type: "cursor",
+    room,
+    user: nickname,
+    x: e.clientX,
+    y: e.clientY,
+    color: userColor
+  }));
+
+  if (!drawing) return;
+
+  if (tool === "pen") {
+    ws.send(JSON.stringify({
+      type: "draw",
+      room,
+      tool,
+      color: colorInput.value,
+      size: sizeInput.value,
+      from: start,
+      to: { x: e.clientX, y: e.clientY }
+    }));
+    start = { x: e.clientX, y: e.clientY };
+  } else {
+    pctx.clearRect(0,0,preview.width,preview.height);
+    pctx.strokeStyle = colorInput.value;
+    pctx.lineWidth = sizeInput.value;
+
+    if (tool === "line") {
+      pctx.beginPath();
+      pctx.moveTo(start.x, start.y);
+      pctx.lineTo(e.clientX, e.clientY);
+      pctx.stroke();
     }
-  });
 
-  canvas.addEventListener("mouseup", e => {
-    if (!drawing || tool.value === "text") return;
-    drawing = false;
-    const x2 = (e.offsetX - offsetX) / scale;
-    const y2 = (e.offsetY - offsetY) / scale;
-
-    strokesRef.push({ userId, tool: tool.value, x1: startX, y1: startY, x2, y2, color: color.value, size: size.value });
-  });
-
-  canvas.addEventListener("mousemove", e => {
-    const x = (e.offsetX - offsetX) / scale;
-    const y = (e.offsetY - offsetY) / scale;
-    cursorsRef.child(userId).set({ x: e.pageX, y: e.pageY });
-    if (!drawing || tool.value !== "pen") return;
-    strokesRef.push({ userId, tool: "pen", x1: startX, y1: startY, x2: x, y2: y, color: color.value, size: size.value });
-    startX = x; startY = y;
-  });
-
-  strokesRef.on("child_added", s => draw(s.val()));
-
-  // RESET VOTE
-  const voteBtn = document.getElementById("voteReset");
-  voteBtn.onclick = () => votesRef.child(userId).set(true);
-  votesRef.on("value", snap => {
-    const count = snap.numChildren();
-    voteBtn.textContent = `Vote reset (${count}/5)`;
-    if (count >= 5) {
-      strokesRef.remove();
-      votesRef.remove();
-      redrawAll();
+    if (tool === "rect") {
+      pctx.strokeRect(
+        start.x,
+        start.y,
+        e.clientX - start.x,
+        e.clientY - start.y
+      );
     }
-  });
+  }
+};
 
-  // CURSORS FOR EVERYONE
-  const cursorEls = {};
-  cursorsRef.on("value", snap => {
-    const data = snap.val() || {};
-    for (const id in data) {
-      let el = cursorEls[id];
-      if (!el) {
-        el = document.createElement("div");
-        el.className = "cursor";
-        el.textContent = "✏";
-        document.body.appendChild(el);
-        cursorEls[id] = el;
-      }
-      el.style.left = data[id].x + "px";
-      el.style.top = data[id].y + "px";
-    }
-  });
+canvas.onmouseup = e => {
+  if (!drawing) return;
+  drawing = false;
+  pctx.clearRect(0,0,preview.width,preview.height);
 
-  window.addEventListener("beforeunload", () => {
-    cursorsRef.child(userId).remove();
-    votesRef.child(userId).remove();
-  });
+  if (tool !== "pen") {
+    ws.send(JSON.stringify({
+      type: "draw",
+      room,
+      tool,
+      color: colorInput.value,
+      size: sizeInput.value,
+      from: start,
+      to: { x: e.clientX, y: e.clientY }
+    }));
+  }
+};
 </script>
 </body>
 </html>
