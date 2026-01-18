@@ -13,7 +13,7 @@
       margin: 0;
       height: 100%;
       overflow: hidden;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      font-family: system-ui, sans-serif;
       background: #eee;
     }
 
@@ -29,7 +29,6 @@
       padding: 6px;
       align-items: center;
       z-index: 10;
-      user-select: none;
     }
 
     #toolbar * {
@@ -40,11 +39,18 @@
       border-radius: 4px;
     }
 
-    #board {
+    #viewport {
       position: absolute;
       top: 42px;
       left: 0;
-      cursor: crosshair;
+      right: 0;
+      bottom: 0;
+      overflow: hidden;
+      cursor: grab;
+    }
+
+    canvas {
+      background: white;
     }
 
     .cursor {
@@ -52,6 +58,7 @@
       pointer-events: none;
       font-size: 14px;
       transform: translate(-50%, -50%);
+      color: red;
     }
 
     .text-input {
@@ -60,7 +67,6 @@
       border: 1px dashed #999;
       outline: none;
       font: 20px Arial;
-      color: black;
     }
   </style>
 </head>
@@ -75,90 +81,104 @@
     <option value="text">Text</option>
     <option value="eraser">Eraser</option>
   </select>
-
   <input type="color" id="color" value="#000000" />
   <input type="range" id="size" min="1" max="20" value="3" />
-  <button id="deleteMine">Delete my stuff</button>
+  <button id="voteReset">Vote reset (0/5)</button>
 </div>
 
-<canvas id="board"></canvas>
+<div id="viewport">
+  <canvas id="board" width="3000" height="3000"></canvas>
+</div>
 
 <script>
-  /******** FIREBASE ********/
+  // FIREBASE CONFIG
   const firebaseConfig = {
     apiKey: "YOUR_API_KEY",
     authDomain: "YOUR_PROJECT.firebaseapp.com",
     databaseURL: "https://YOUR_PROJECT.firebaseio.com",
     projectId: "YOUR_PROJECT"
   };
-
   firebase.initializeApp(firebaseConfig);
   const db = firebase.database();
   const strokesRef = db.ref("strokes");
   const cursorsRef = db.ref("cursors");
-
-  /******** SETUP ********/
-  const canvas = document.getElementById("board");
-  const ctx = canvas.getContext("2d");
-  function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight - 42;
-  }
-  window.addEventListener("resize", resize);
-  resize();
+  const votesRef = db.ref("resetVotes");
 
   const userId = Math.random().toString(36).slice(2);
 
-  let drawing = false;
-  let startX = 0, startY = 0;
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const viewport = document.getElementById("viewport");
 
-  /******** DRAW ********/
-  function draw(data) {
-    ctx.strokeStyle = data.color;
-    ctx.fillStyle = data.color;
-    ctx.lineWidth = data.size;
+  let scale = 1, offsetX = 0, offsetY = 0;
+  let panning = false, panStart = {};
+  let drawing = false, startX = 0, startY = 0;
+
+  function redrawAll() {
+    ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    ctx.clearRect(-offsetX / scale, -offsetY / scale, canvas.width / scale, canvas.height / scale);
+    strokesRef.once("value", snap => snap.forEach(s => draw(s.val())));
+  }
+
+  // ZOOM
+  viewport.addEventListener("wheel", e => {
+    e.preventDefault();
+    const zoom = e.deltaY < 0 ? 1.1 : 0.9;
+    scale *= zoom;
+    redrawAll();
+  });
+
+  // PAN
+  viewport.addEventListener("mousedown", e => {
+    if (e.button !== 1) return;
+    panning = true;
+    panStart = { x: e.clientX - offsetX, y: e.clientY - offsetY };
+  });
+  window.addEventListener("mousemove", e => {
+    if (!panning) return;
+    offsetX = e.clientX - panStart.x;
+    offsetY = e.clientY - panStart.y;
+    redrawAll();
+  });
+  window.addEventListener("mouseup", () => panning = false);
+
+  function draw(d) {
+    ctx.strokeStyle = d.color;
+    ctx.fillStyle = d.color;
+    ctx.lineWidth = d.size;
     ctx.lineCap = "round";
 
-    if (data.tool === "pen") {
+    if (d.tool === "pen") {
       ctx.beginPath();
-      ctx.moveTo(data.x1, data.y1);
-      ctx.lineTo(data.x2, data.y2);
+      ctx.moveTo(d.x1, d.y1);
+      ctx.lineTo(d.x2, d.y2);
       ctx.stroke();
     }
-
-    if (data.tool === "line") {
+    if (d.tool === "line") {
       ctx.beginPath();
-      ctx.moveTo(data.x1, data.y1);
-      ctx.lineTo(data.x2, data.y2);
+      ctx.moveTo(d.x1, d.y1);
+      ctx.lineTo(d.x2, d.y2);
       ctx.stroke();
     }
-
-    if (data.tool === "rect") {
-      ctx.strokeRect(data.x1, data.y1, data.x2 - data.x1, data.y2 - data.y1);
-    }
-
-    if (data.tool === "circle") {
-      const r = Math.hypot(data.x2 - data.x1, data.y2 - data.y1);
+    if (d.tool === "rect") ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+    if (d.tool === "circle") {
+      const r = Math.hypot(d.x2 - d.x1, d.y2 - d.y1);
       ctx.beginPath();
-      ctx.arc(data.x1, data.y1, r, 0, Math.PI * 2);
+      ctx.arc(d.x1, d.y1, r, 0, Math.PI * 2);
       ctx.stroke();
     }
-
-    if (data.tool === "text") {
-      ctx.font = `${data.size * 6}px Arial`;
-      ctx.fillText(data.text, data.x1, data.y1);
-    }
-
-    if (data.tool === "eraser") {
-      ctx.clearRect(data.x2 - data.size, data.y2 - data.size, data.size * 2, data.size * 2);
+    if (d.tool === "eraser") ctx.clearRect(d.x2 - d.size, d.y2 - d.size, d.size * 2, d.size * 2);
+    if (d.tool === "text") {
+      ctx.font = `${d.size * 6}px Arial`;
+      ctx.fillText(d.text, d.x1, d.y1);
     }
   }
 
-  /******** INPUT ********/
+  // DRAW EVENTS
   canvas.addEventListener("mousedown", e => {
     drawing = true;
-    startX = e.offsetX;
-    startY = e.offsetY;
+    startX = (e.offsetX - offsetX) / scale;
+    startY = (e.offsetY - offsetY) / scale;
 
     if (tool.value === "text") {
       const input = document.createElement("div");
@@ -169,20 +189,11 @@
       input.style.color = color.value;
       document.body.appendChild(input);
       input.focus();
-
       input.onblur = () => {
         const text = input.innerText.trim();
         document.body.removeChild(input);
         if (!text) return;
-        strokesRef.push({
-          userId,
-          tool: "text",
-          text,
-          x1: startX,
-          y1: startY,
-          color: color.value,
-          size: size.value
-        });
+        strokesRef.push({ userId, tool: "text", text, x1: startX, y1: startY, color: color.value, size: size.value });
       };
     }
   });
@@ -190,58 +201,41 @@
   canvas.addEventListener("mouseup", e => {
     if (!drawing || tool.value === "text") return;
     drawing = false;
+    const x2 = (e.offsetX - offsetX) / scale;
+    const y2 = (e.offsetY - offsetY) / scale;
 
-    strokesRef.push({
-      userId,
-      tool: tool.value,
-      x1: startX,
-      y1: startY,
-      x2: e.offsetX,
-      y2: e.offsetY,
-      color: color.value,
-      size: size.value
-    });
+    strokesRef.push({ userId, tool: tool.value, x1: startX, y1: startY, x2, y2, color: color.value, size: size.value });
   });
 
   canvas.addEventListener("mousemove", e => {
+    const x = (e.offsetX - offsetX) / scale;
+    const y = (e.offsetY - offsetY) / scale;
     cursorsRef.child(userId).set({ x: e.pageX, y: e.pageY });
-
     if (!drawing || tool.value !== "pen") return;
-
-    strokesRef.push({
-      userId,
-      tool: "pen",
-      x1: startX,
-      y1: startY,
-      x2: e.offsetX,
-      y2: e.offsetY,
-      color: color.value,
-      size: size.value
-    });
-
-    startX = e.offsetX;
-    startY = e.offsetY;
+    strokesRef.push({ userId, tool: "pen", x1: startX, y1: startY, x2: x, y2: y, color: color.value, size: size.value });
+    startX = x; startY = y;
   });
 
-  /******** SYNC ********/
   strokesRef.on("child_added", s => draw(s.val()));
 
-  document.getElementById("deleteMine").onclick = () => {
-    strokesRef.once("value", snap => {
-      snap.forEach(child => {
-        if (child.val().userId === userId) child.ref.remove();
-      });
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      strokesRef.once("value", s => s.forEach(c => draw(c.val())));
-    });
-  };
+  // RESET VOTE
+  const voteBtn = document.getElementById("voteReset");
+  voteBtn.onclick = () => votesRef.child(userId).set(true);
+  votesRef.on("value", snap => {
+    const count = snap.numChildren();
+    voteBtn.textContent = `Vote reset (${count}/5)`;
+    if (count >= 5) {
+      strokesRef.remove();
+      votesRef.remove();
+      redrawAll();
+    }
+  });
 
-  /******** CURSORS ********/
+  // CURSORS FOR EVERYONE
   const cursorEls = {};
   cursorsRef.on("value", snap => {
     const data = snap.val() || {};
     for (const id in data) {
-      if (id === userId) continue;
       let el = cursorEls[id];
       if (!el) {
         el = document.createElement("div");
@@ -255,7 +249,10 @@
     }
   });
 
-  window.addEventListener("beforeunload", () => cursorsRef.child(userId).remove());
+  window.addEventListener("beforeunload", () => {
+    cursorsRef.child(userId).remove();
+    votesRef.child(userId).remove();
+  });
 </script>
 </body>
 </html>
