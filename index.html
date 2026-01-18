@@ -3,53 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <title>Realtime Whiteboard</title>
-
 <style>
-html, body {
-  margin: 0;
-  height: 100%;
-  overflow: hidden;
-  background: #111;
-}
-
-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-}
-
-#toolbar {
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  background: #222;
-  padding: 8px;
-  border-radius: 8px;
-  display: flex;
-  gap: 6px;
-  z-index: 10;
-}
-
-button, input {
-  cursor: pointer;
-}
-
-.cursor {
-  position: absolute;
-  pointer-events: none;
-  font-size: 12px;
-  transform: translate(10px, 10px);
-}
+html, body { margin:0; height:100%; overflow:hidden; background:#111; }
+canvas { position:absolute; top:0; left:0; }
+#toolbar { position:fixed; top:10px; left:10px; background:#222; padding:8px; border-radius:8px; display:flex; gap:6px; z-index:10; color:white; }
+button,input { cursor:pointer; }
+.cursor { position:absolute; pointer-events:none; font-size:12px; transform:translate(10px,10px); }
 </style>
 </head>
-
 <body>
 
 <div id="toolbar">
-  <button onclick="tool='pen'">✏️</button>
-  <button onclick="tool='rect'">⬛</button>
-  <button onclick="tool='line'">➖</button>
-  <input type="color" id="color">
+  <button onclick="tool='pen'">✏️ Pen</button>
+  <button onclick="tool='line'">➖ Line</button>
+  <button onclick="tool='rect'">⬛ Rect</button>
+  <input type="color" id="color" value="#ffffff">
   <input type="range" id="size" min="1" max="20" value="4">
 </div>
 
@@ -57,143 +25,89 @@ button, input {
 <canvas id="preview"></canvas>
 
 <script>
-const canvas = document.getElementById("canvas");
-const preview = document.getElementById("preview");
-const ctx = canvas.getContext("2d");
-const pctx = preview.getContext("2d");
+const canvas = document.getElementById('canvas');
+const preview = document.getElementById('preview');
+const ctx = canvas.getContext('2d');
+const pctx = preview.getContext('2d');
 
 canvas.width = preview.width = innerWidth;
 canvas.height = preview.height = innerHeight;
 
 const nickname = prompt("Nickname?");
-const room = location.hash.slice(1) || "main";
-const colorInput = document.getElementById("color");
-const sizeInput = document.getElementById("size");
+const room = location.hash.slice(1)||"main";
+const colorInput = document.getElementById('color');
+const sizeInput = document.getElementById('size');
 
-let tool = "pen";
+let tool = 'pen';
 let drawing = false;
 let start = null;
-
 const userColor = "#" + Math.floor(Math.random()*16777215).toString(16);
 
 const ws = new WebSocket(`ws://${location.host}`);
 const cursors = {};
 
-ws.onmessage = e => {
-  const msg = JSON.parse(e.data);
-
-  if (msg.type === "draw") draw(msg);
-  if (msg.type === "cursor") updateCursor(msg);
+ws.onopen = () => {
+  ws.send(JSON.stringify({type:'join', room, nickname}));
 };
 
-function draw(d) {
-  ctx.strokeStyle = d.color;
-  ctx.lineWidth = d.size;
+ws.onmessage = e => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === 'draw') draw(msg);
+  if (msg.type === 'history') msg.history.forEach(draw);
+  if (msg.type === 'cursor') updateCursor(msg);
+};
+
+function draw(d){
+  ctx.strokeStyle=d.color;
+  ctx.lineWidth=d.size;
   ctx.beginPath();
-
-  if (d.tool === "pen") {
-    ctx.moveTo(d.from.x, d.from.y);
-    ctx.lineTo(d.to.x, d.to.y);
+  if(d.tool==='pen'||d.tool==='line'){
+    ctx.moveTo(d.from.x,d.from.y);
+    ctx.lineTo(d.to.x,d.to.y);
+  } else if(d.tool==='rect'){
+    ctx.strokeRect(d.from.x,d.from.y,d.to.x-d.from.x,d.to.y-d.from.y);
   }
-
-  if (d.tool === "line") {
-    ctx.moveTo(d.from.x, d.from.y);
-    ctx.lineTo(d.to.x, d.to.y);
-  }
-
-  if (d.tool === "rect") {
-    ctx.strokeRect(
-      d.from.x,
-      d.from.y,
-      d.to.x - d.from.x,
-      d.to.y - d.from.y
-    );
-  }
-
   ctx.stroke();
 }
 
-function updateCursor(d) {
-  if (!cursors[d.user]) {
-    const el = document.createElement("div");
-    el.className = "cursor";
-    el.style.color = d.color;
-    el.innerText = d.user;
+function updateCursor(d){
+  if(!cursors[d.user]){
+    const el = document.createElement('div');
+    el.className='cursor';
+    el.style.color=d.color;
+    el.innerText=d.user;
     document.body.appendChild(el);
-    cursors[d.user] = el;
+    cursors[d.user]=el;
   }
-  cursors[d.user].style.left = d.x + "px";
-  cursors[d.user].style.top = d.y + "px";
+  cursors[d.user].style.left=d.x+'px';
+  cursors[d.user].style.top=d.y+'px';
 }
 
-canvas.onmousedown = e => {
-  drawing = true;
-  start = { x: e.clientX, y: e.clientY };
-};
-
+canvas.onmousedown = e => { drawing=true; start={x:e.clientX,y:e.clientY}; };
 canvas.onmousemove = e => {
-  ws.send(JSON.stringify({
-    type: "cursor",
-    room,
-    user: nickname,
-    x: e.clientX,
-    y: e.clientY,
-    color: userColor
-  }));
-
-  if (!drawing) return;
-
-  if (tool === "pen") {
-    ws.send(JSON.stringify({
-      type: "draw",
-      room,
-      tool,
-      color: colorInput.value,
-      size: sizeInput.value,
-      from: start,
-      to: { x: e.clientX, y: e.clientY }
-    }));
-    start = { x: e.clientX, y: e.clientY };
+  ws.send(JSON.stringify({type:'cursor',room,user:nickname,x:e.clientX,y:e.clientY,color:userColor}));
+  if(!drawing) return;
+  if(tool==='pen'){
+    ws.send(JSON.stringify({type:'draw',room,tool,color:colorInput.value,size:sizeInput.value,from:start,to:{x:e.clientX,y:e.clientY}}));
+    start={x:e.clientX,y:e.clientY};
   } else {
     pctx.clearRect(0,0,preview.width,preview.height);
-    pctx.strokeStyle = colorInput.value;
-    pctx.lineWidth = sizeInput.value;
-
-    if (tool === "line") {
+    pctx.strokeStyle=colorInput.value;
+    pctx.lineWidth=sizeInput.value;
+    if(tool==='line'){
       pctx.beginPath();
-      pctx.moveTo(start.x, start.y);
-      pctx.lineTo(e.clientX, e.clientY);
+      pctx.moveTo(start.x,start.y);
+      pctx.lineTo(e.clientX,e.clientY);
       pctx.stroke();
     }
-
-    if (tool === "rect") {
-      pctx.strokeRect(
-        start.x,
-        start.y,
-        e.clientX - start.x,
-        e.clientY - start.y
-      );
+    if(tool==='rect'){
+      pctx.strokeRect(start.x,start.y,e.clientX-start.x,e.clientY-start.y);
     }
   }
 };
-
 canvas.onmouseup = e => {
-  if (!drawing) return;
-  drawing = false;
+  if(!drawing) return;
+  drawing=false;
   pctx.clearRect(0,0,preview.width,preview.height);
-
-  if (tool !== "pen") {
-    ws.send(JSON.stringify({
-      type: "draw",
-      room,
-      tool,
-      color: colorInput.value,
-      size: sizeInput.value,
-      from: start,
-      to: { x: e.clientX, y: e.clientY }
-    }));
-  }
-};
-</script>
-</body>
-</html>
+  if(tool!=='pen'){
+    ws.send(JSON.stringify({type:'draw',room,tool,color:colorInput.value,size:sizeInput.value,fro
