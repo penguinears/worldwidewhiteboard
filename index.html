@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>World Wide Whiteboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #eee;
+    }
+
+    #toolbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: #1a1a1a;
+      color: white;
+      display: flex;
+      gap: 8px;
+      padding: 6px;
+      align-items: center;
+      z-index: 10;
+      user-select: none;
+    }
+
+    #toolbar * {
+      background: #2a2a2a;
+      color: white;
+      border: none;
+      padding: 4px 6px;
+      border-radius: 4px;
+    }
+
+    #board {
+      position: absolute;
+      top: 42px;
+      left: 0;
+      cursor: crosshair;
+    }
+
+    .cursor {
+      position: absolute;
+      pointer-events: none;
+      font-size: 14px;
+      transform: translate(-50%, -50%);
+    }
+
+    .text-input {
+      position: absolute;
+      background: transparent;
+      border: 1px dashed #999;
+      outline: none;
+      font: 20px Arial;
+      color: black;
+    }
+  </style>
+</head>
+<body>
+
+<div id="toolbar">
+  <select id="tool">
+    <option value="pen">Pen</option>
+    <option value="line">Line</option>
+    <option value="rect">Rect</option>
+    <option value="circle">Circle</option>
+    <option value="text">Text</option>
+    <option value="eraser">Eraser</option>
+  </select>
+
+  <input type="color" id="color" value="#000000" />
+  <input type="range" id="size" min="1" max="20" value="3" />
+  <button id="deleteMine">Delete my stuff</button>
+</div>
+
+<canvas id="board"></canvas>
+
+<script>
+  /******** FIREBASE ********/
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    databaseURL: "https://YOUR_PROJECT.firebaseio.com",
+    projectId: "YOUR_PROJECT"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+  const strokesRef = db.ref("strokes");
+  const cursorsRef = db.ref("cursors");
+
+  /******** SETUP ********/
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight - 42;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  const userId = Math.random().toString(36).slice(2);
+
+  let drawing = false;
+  let startX = 0, startY = 0;
+
+  /******** DRAW ********/
+  function draw(data) {
+    ctx.strokeStyle = data.color;
+    ctx.fillStyle = data.color;
+    ctx.lineWidth = data.size;
+    ctx.lineCap = "round";
+
+    if (data.tool === "pen") {
+      ctx.beginPath();
+      ctx.moveTo(data.x1, data.y1);
+      ctx.lineTo(data.x2, data.y2);
+      ctx.stroke();
+    }
+
+    if (data.tool === "line") {
+      ctx.beginPath();
+      ctx.moveTo(data.x1, data.y1);
+      ctx.lineTo(data.x2, data.y2);
+      ctx.stroke();
+    }
+
+    if (data.tool === "rect") {
+      ctx.strokeRect(data.x1, data.y1, data.x2 - data.x1, data.y2 - data.y1);
+    }
+
+    if (data.tool === "circle") {
+      const r = Math.hypot(data.x2 - data.x1, data.y2 - data.y1);
+      ctx.beginPath();
+      ctx.arc(data.x1, data.y1, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (data.tool === "text") {
+      ctx.font = `${data.size * 6}px Arial`;
+      ctx.fillText(data.text, data.x1, data.y1);
+    }
+
+    if (data.tool === "eraser") {
+      ctx.clearRect(data.x2 - data.size, data.y2 - data.size, data.size * 2, data.size * 2);
+    }
+  }
+
+  /******** INPUT ********/
+  canvas.addEventListener("mousedown", e => {
+    drawing = true;
+    startX = e.offsetX;
+    startY = e.offsetY;
+
+    if (tool.value === "text") {
+      const input = document.createElement("div");
+      input.contentEditable = true;
+      input.className = "text-input";
+      input.style.left = e.pageX + "px";
+      input.style.top = e.pageY + "px";
+      input.style.color = color.value;
+      document.body.appendChild(input);
+      input.focus();
+
+      input.onblur = () => {
+        const text = input.innerText.trim();
+        document.body.removeChild(input);
+        if (!text) return;
+        strokesRef.push({
+          userId,
+          tool: "text",
+          text,
+          x1: startX,
+          y1: startY,
+          color: color.value,
+          size: size.value
+        });
+      };
+    }
+  });
+
+  canvas.addEventListener("mouseup", e => {
+    if (!drawing || tool.value === "text") return;
+    drawing = false;
+
+    strokesRef.push({
+      userId,
+      tool: tool.value,
+      x1: startX,
+      y1: startY,
+      x2: e.offsetX,
+      y2: e.offsetY,
+      color: color.value,
+      size: size.value
+    });
+  });
+
+  canvas.addEventListener("mousemove", e => {
+    cursorsRef.child(userId).set({ x: e.pageX, y: e.pageY });
+
+    if (!drawing || tool.value !== "pen") return;
+
+    strokesRef.push({
+      userId,
+      tool: "pen",
+      x1: startX,
+      y1: startY,
+      x2: e.offsetX,
+      y2: e.offsetY,
+      color: color.value,
+      size: size.value
+    });
+
+    startX = e.offsetX;
+    startY = e.offsetY;
+  });
+
+  /******** SYNC ********/
+  strokesRef.on("child_added", s => draw(s.val()));
+
+  document.getElementById("deleteMine").onclick = () => {
+    strokesRef.once("value", snap => {
+      snap.forEach(child => {
+        if (child.val().userId === userId) child.ref.remove();
+      });
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      strokesRef.once("value", s => s.forEach(c => draw(c.val())));
+    });
+  };
+
+  /******** CURSORS ********/
+  const cursorEls = {};
+  cursorsRef.on("value", snap => {
+    const data = snap.val() || {};
+    for (const id in data) {
+      if (id === userId) continue;
+      let el = cursorEls[id];
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "cursor";
+        el.textContent = "✏";
+        document.body.appendChild(el);
+        cursorEls[id] = el;
+      }
+      el.style.left = data[id].x + "px";
+      el.style.top = data[id].y + "px";
+    }
+  });
+
+  window.addEventListener("beforeunload", () => cursorsRef.child(userId).remove());
+</script>
+</body>
+</html>
